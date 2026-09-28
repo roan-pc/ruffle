@@ -2,6 +2,7 @@ use crate::avm1::activation::Activation;
 use crate::avm1::error::Error;
 use crate::avm1::function::{ExecutionName, ExecutionReason, FunctionObject};
 use crate::avm1::object::{NativeObject, stage_object};
+use crate::avm1::object_reference::MovieClipPath;
 use crate::avm1::property::{Attribute, Property};
 use crate::avm1::property_map::{Entry, PropertyMap};
 use crate::avm1::{ObjectPtr, Value};
@@ -95,6 +96,9 @@ impl ObjectHandle {
 #[collect(no_drop)]
 struct ObjectData<'gc> {
     native: NativeObject<'gc>,
+    /// Immutable creation path shared by fresh MovieClipReferences. The reference's
+    /// invalidation state is deliberately separate, and old paths survive renames.
+    movie_clip_path: Option<Gc<'gc, MovieClipPath<'gc>>>,
     properties: PropertyMap<'gc, Property<'gc>>,
     interfaces: Option<Vec<Object<'gc>>>,
     watchers: PropertyMap<'gc, Watcher<'gc>>,
@@ -134,6 +138,7 @@ impl<'gc> Object<'gc> {
             context.gc(),
             RefLock::new(ObjectData {
                 native,
+                movie_clip_path: None,
                 properties: PropertyMap::new(),
                 interfaces: None,
                 watchers: PropertyMap::new(),
@@ -156,11 +161,30 @@ impl<'gc> Object<'gc> {
             gc_context,
             RefLock::new(ObjectData {
                 native: NativeObject::None,
+                movie_clip_path: None,
                 properties: PropertyMap::new(),
                 interfaces: None,
                 watchers: PropertyMap::new(),
             }),
         ))
+    }
+
+    /// Reuse only the immutable path data, never a reference's invalidation state.
+    /// Check the current ancestry on every conversion: a rename or reparent of
+    /// any ancestor must give newly created references a new path snapshot.
+    pub(in crate::avm1) fn movie_clip_path(
+        self,
+        gc: &Mutation<'gc>,
+        object: DisplayObject<'gc>,
+    ) -> Gc<'gc, MovieClipPath<'gc>> {
+        if let Some(cached) = self.0.borrow().movie_clip_path
+            && cached.matches_object(object)
+        {
+            return cached;
+        }
+        let path = Gc::new(gc, MovieClipPath::new_from_path(gc, object.path()));
+        self.0.borrow_mut(gc).movie_clip_path = Some(path);
+        path
     }
 
     /// Gets the value of a data property on this object, ignoring attributes.

@@ -23,7 +23,7 @@ pub struct MovieClipPath<'gc> {
 
 impl<'gc> MovieClipPath<'gc> {
     /// Convert a path to a clip into a `MovieClipPath`
-    fn new_from_path(mc: &Mutation<'gc>, path: WString) -> Self {
+    pub(super) fn new_from_path(mc: &Mutation<'gc>, path: WString) -> Self {
         let mut level = 0;
 
         // Break up the path
@@ -47,6 +47,31 @@ impl<'gc> MovieClipPath<'gc> {
     }
 }
 
+impl MovieClipPath<'_> {
+    /// Check the same names and root depth as TDisplayObject::path without
+    /// rebuilding its string. Names may themselves contain dots or be empty.
+    pub(super) fn matches_object(&self, mut object: DisplayObject<'_>) -> bool {
+        let mut remaining = self.full_path.as_wstr();
+        while let Some(parent) = object.avm1_parent() {
+            if let Some(name) = object.name() {
+                let Some(prefix) = remaining.strip_suffix(name.as_wstr()) else {
+                    return false;
+                };
+                remaining = prefix;
+            }
+            let Some(prefix) = remaining.strip_suffix(WStr::from_units(b".")) else {
+                return false;
+            };
+            remaining = prefix;
+            object = parent;
+        }
+        remaining
+            .strip_prefix(WStr::from_units(b"_level"))
+            .and_then(|level| level.parse::<i32>().ok())
+            == Some(object.depth())
+    }
+}
+
 /// Represents a reference to a movie clip in AVM1
 /// This consists of a string path which will be resolved to a target value when used
 /// This also handles caching to maintain performance
@@ -58,7 +83,7 @@ pub struct MovieClipReference<'gc>(Gc<'gc, MovieClipReferenceData<'gc>>);
 #[collect(no_drop)]
 struct MovieClipReferenceData<'gc> {
     /// The path to the target clip
-    path: MovieClipPath<'gc>,
+    path: Gc<'gc, MovieClipPath<'gc>>,
 
     /// A weak reference to the target stage object that `path` points to
     /// This is used for fast-path resolving when possible, as well as for re-generating `path` (in the case the target object is renamed)
@@ -73,18 +98,18 @@ impl<'gc> MovieClipReference<'gc> {
     ) -> Option<Self> {
         // We can't use as_display_object here as we explicitly don't want to convert `SuperObjects`
         let display_object = object.as_display_object_no_super()?;
-        let (path, cached) = if let DisplayObject::MovieClip(mc) = display_object {
-            (mc.path(), display_object.object1()?)
+        let (display_object, cached) = if let DisplayObject::MovieClip(_) = display_object {
+            (display_object, display_object.object1()?)
         } else if activation.swf_version() <= 5 {
             let display_object = Self::process_swf5_references(activation, display_object)?;
 
-            (display_object.path(), display_object.object1()?)
+            (display_object, display_object.object1()?)
         } else {
             return None;
         };
 
         let mc_ref = MovieClipReferenceData {
-            path: MovieClipPath::new_from_path(activation.gc(), path),
+            path: cached.movie_clip_path(activation.gc(), display_object),
             cached_object: Some(cached.as_weak()).into(),
         };
         Some(Self(Gc::new(activation.gc(), mc_ref)))
@@ -92,7 +117,7 @@ impl<'gc> MovieClipReference<'gc> {
 
     pub fn from_path(gc: &'gc Mutation<'gc>, path: &WStr) -> Self {
         let mc_ref = MovieClipReferenceData {
-            path: MovieClipPath::new_from_path(gc, path.to_owned()),
+            path: Gc::new(gc, MovieClipPath::new_from_path(gc, path.to_owned())),
             cached_object: None.into(),
         };
         Self(Gc::new(gc, mc_ref))
@@ -205,5 +230,81 @@ impl<'gc> MovieClipReference<'gc> {
     /// Get the path used for this reference
     pub fn path(self) -> AvmString<'gc> {
         self.0.path.full_path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::avm1::{ExecutionReason, test_utils::with_avm};
+
+    fn child<'gc>(
+        activation: &mut Activation<'_, 'gc>,
+        parent: Object<'gc>,
+        name: &str,
+        depth: i32,
+    ) -> Object<'gc> {
+        let method = AvmString::new(activation.gc(), WString::from_utf8("createEmptyMovieClip"));
+        let name = AvmString::new(activation.gc(), WString::from_utf8(name));
+        parent
+            .call_method(
+                method,
+                &[name.into(), depth.into()],
+                activation,
+                ExecutionReason::FunctionCall,
+            )
+            .unwrap()
+            .as_object(activation)
+            .unwrap()
+    }
+
+    #[test]
+    fn shared_paths_keep_independent_reference_invalidation() {
+        with_avm(8, |activation, root| {
+            let object = child(activation, root, "clip", 0);
+            let first = MovieClipReference::try_from_stage_object(activation, object).unwrap();
+            let second = MovieClipReference::try_from_stage_object(activation, object).unwrap();
+            assert!(Gc::ptr_eq(first.0.path, second.0.path));
+            assert!(!Gc::ptr_eq(first.0, second.0));
+            // Resolving one reference by path must not invalidate another reference.
+            first.0.cached_object.take();
+            assert!(!first.resolve_reference(activation).unwrap().0);
+            assert!(second.resolve_reference(activation).unwrap().0);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn cached_path_tracks_ancestor_names_and_parent_changes() {
+        with_avm(8, |activation, root| {
+            let parent = child(activation, root, "parent", 0);
+            let object = child(activation, parent, "with.dots", 0);
+            let empty = child(activation, object, "", 0);
+            let first = MovieClipReference::try_from_stage_object(activation, empty).unwrap();
+            let same = MovieClipReference::try_from_stage_object(activation, empty).unwrap();
+            assert!(Gc::ptr_eq(first.0.path, same.0.path));
+            assert_eq!(first.path().to_utf8_lossy(), "_level0.parent.with.dots.");
+            let renamed = AvmString::new(activation.gc(), WString::from_utf8("renamed.é"));
+            parent
+                .as_display_object_no_super()
+                .unwrap()
+                .set_name(activation.gc(), renamed);
+            let second = MovieClipReference::try_from_stage_object(activation, empty).unwrap();
+            assert!(!Gc::ptr_eq(first.0.path, second.0.path));
+            assert_eq!(
+                second.path().to_utf8_lossy(),
+                "_level0.renamed.é.with.dots."
+            );
+            assert_eq!(first.path().to_utf8_lossy(), "_level0.parent.with.dots.");
+            object
+                .as_display_object_no_super()
+                .unwrap()
+                .set_parent(activation.context, root.as_display_object_no_super());
+            let third = MovieClipReference::try_from_stage_object(activation, empty).unwrap();
+            assert_eq!(third.path().to_utf8_lossy(), "_level0.with.dots.");
+            assert!(!Gc::ptr_eq(second.0.path, third.0.path));
+            assert_eq!(first.path().to_utf8_lossy(), "_level0.parent.with.dots.");
+            Ok(())
+        });
     }
 }
