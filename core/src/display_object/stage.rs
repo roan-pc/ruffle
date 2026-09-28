@@ -749,9 +749,11 @@ impl<'gc> Stage<'gc> {
     /// TODO: Need additional check as Flash Player does not
     /// broadcast the 'render' event on the first render
     pub fn broadcast_render(self, context: &mut UpdateContext<'gc>) {
-        let render_evt = Avm2EventObject::bare_default_event(context, "render");
-        let dobject_constr = context.avm2.classes().display_object;
-        Avm2::broadcast_event(context, render_evt, dobject_constr);
+        if context.avm2.is_initialized() {
+            let render_evt = Avm2EventObject::bare_default_event(context, "render");
+            let dobject_constr = context.avm2.classes().display_object;
+            Avm2::broadcast_event(context, render_evt, dobject_constr);
+        }
 
         self.set_invalidated(false);
     }
@@ -823,9 +825,12 @@ impl<'gc> TDisplayObject<'gc> for Stage<'gc> {
         _instantiated_by: Instantiator,
         _run_frame: bool,
     ) {
+        if !context.avm2.is_initialized() || self.object2().is_some() {
+            return;
+        }
         let stage_constr = context.avm2.classes().stage;
 
-        // TODO: We should only do this if the movie is actually an AVM2 movie.
+        // An AVM1 image load may also need AVM2's stage objects.
         // This is necessary for DisplayObject and EventDispatcher super-constructors to run.
         let avm2_stage =
             Avm2StageObject::for_display_object(context.gc(), self.into(), stage_constr);

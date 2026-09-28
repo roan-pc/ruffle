@@ -245,6 +245,7 @@ impl Value {
             Value::Number(value) => Avm2Value::Number(value),
             Value::String(value) => Avm2Value::String(AvmString::new_utf8(context.gc(), value)),
             Value::Object(values) => {
+                context.ensure_avm2_initialized();
                 let obj = Avm2ScriptObject::new_object(context);
 
                 for (key, value) in values.into_iter() {
@@ -255,6 +256,7 @@ impl Value {
                 Avm2Value::Object(obj)
             }
             Value::List(values) => {
+                context.ensure_avm2_initialized();
                 let storage = values
                     .iter()
                     .map(|value| value.to_owned().into_avm2(context))

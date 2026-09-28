@@ -487,6 +487,10 @@ impl<'gc> MovieClip<'gc> {
         context: &mut UpdateContext<'gc>,
         chunk_limit: &mut ExecutionLimit,
     ) -> bool {
+        // ImportAssets also enters here, without replacing the player's root.
+        if self.movie().is_action_script_3() {
+            context.ensure_avm2_initialized();
+        }
         let shared = Gc::as_ref(self.0.shared.get());
         let (swf, progress) = (&shared.swf, &shared.preload_progress);
 

@@ -1684,6 +1684,7 @@ impl<'gc> MovieLoader<'gc> {
         {
             use crate::avm2::globals::slots::flash_system_loader_context as loader_context_slots;
 
+            uc.ensure_avm2_initialized();
             context
                 .map(|o| o.get_slot(loader_context_slots::APPLICATION_DOMAIN))
                 .and_then(|v| v.as_object())
@@ -1856,6 +1857,7 @@ impl<'gc> MovieLoader<'gc> {
                 return Ok(());
             }
             ContentType::Gif | ContentType::Jpeg | ContentType::JpegXr | ContentType::Png => {
+                uc.ensure_avm2_initialized();
                 let mut activation = Avm2Activation::from_nothing(uc);
 
                 let library = activation.context.library.library_for_movie_mut(movie);

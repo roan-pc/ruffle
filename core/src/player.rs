@@ -1187,6 +1187,7 @@ impl Player {
                 key_char,
                 key_location,
             } = &event
+                && context.avm2.is_initialized()
             {
                 let ctrl_key = context.input.is_key_down(KeyCode::CONTROL);
                 let alt_key = context.input.is_key_down(KeyCode::ALT);
@@ -2399,6 +2400,7 @@ impl Player {
         let debug_ui = self.debug_ui.clone();
         let mut debug_ui = debug_ui.borrow_mut();
         self.mutate_with_update_context(|context| {
+            context.ensure_avm2_initialized();
             debug_ui.show(egui_ctx, context, movie_offset);
         });
     }
@@ -2660,6 +2662,7 @@ pub struct PlayerBuilder {
     #[cfg(feature = "known_stubs")]
     stub_report_output: Option<std::path::PathBuf>,
     avm2_optimizer_enabled: bool,
+    lazy_avm2_initialization: bool,
     #[cfg(feature = "default_font")]
     default_font: bool,
 }
@@ -2717,6 +2720,7 @@ impl PlayerBuilder {
             #[cfg(feature = "known_stubs")]
             stub_report_output: None,
             avm2_optimizer_enabled: true,
+            lazy_avm2_initialization: false,
             #[cfg(feature = "default_font")]
             default_font: true,
         }
@@ -2939,6 +2943,14 @@ impl PlayerBuilder {
     /// will write the report to this path and exit the process.
     pub fn with_stub_report_output(mut self, output: std::path::PathBuf) -> Self {
         self.stub_report_output = Some(output);
+        self
+    }
+
+    /// Defer AVM2 builtins until AS3 content or an AVM1 image loader needs them.
+    /// AVM1 movies otherwise never need the AVM2 class graph. Once initialized,
+    /// AVM2 stays available for the rest of the player's lifetime.
+    pub fn with_lazy_avm2_initialization(mut self, value: bool) -> Self {
+        self.lazy_avm2_initialization = value;
         self
     }
 
@@ -3181,7 +3193,14 @@ impl PlayerBuilder {
                 .avm2
                 .set_optimizer_enabled(self.avm2_optimizer_enabled);
             Avm1::load_player_globals(context);
-            Avm2::load_player_globals(context);
+            if !self.lazy_avm2_initialization
+                || self
+                    .movie
+                    .as_ref()
+                    .is_some_and(SwfMovie::is_action_script_3)
+            {
+                Avm2::load_player_globals(context);
+            }
 
             let stage = context.stage;
             stage.set_align(context, self.align);
@@ -3193,6 +3212,7 @@ impl PlayerBuilder {
             stage.build_matrices(context);
             #[cfg(feature = "known_stubs")]
             if let Some(stub_path) = self.stub_report_output {
+                context.ensure_avm2_initialized();
                 crate::avm2::specification::capture_specification(context, &stub_path);
             }
         });
@@ -3314,4 +3334,63 @@ pub enum PlayerMode {
 
     /// Represents the debug version of Flash Player, i.e. flashplayerdebugger.
     Debug,
+}
+
+#[cfg(test)]
+mod lazy_avm2_tests {
+    use super::*;
+
+    #[test]
+    fn avm1_can_run_without_avm2_builtins() {
+        let player = PlayerBuilder::new()
+            .with_movie(SwfMovie::empty(8, None))
+            .with_lazy_avm2_initialization(true)
+            .build();
+        let mut player = player.lock().unwrap();
+        player.run_frame();
+        player.render();
+        player.mutate_with_update_context(|context| {
+            assert!(!context.avm2.is_initialized());
+            assert!(context.stage.object2().is_none());
+            assert!(context.stage.loader_info().is_none());
+            assert!(context.stage.stage3ds().is_empty());
+            context.stage.broadcast_render(context);
+            let root = context.stage.root_clip().unwrap().as_movie_clip().unwrap();
+            crate::frame_lifecycle::run_inner_goto_frame(context, &[], root);
+            assert!(!context.avm2.is_initialized());
+        });
+    }
+
+    #[test]
+    fn host_objects_initialize_avm2_and_stage_once() {
+        let player = PlayerBuilder::new()
+            .with_movie(SwfMovie::empty(8, None))
+            .with_lazy_avm2_initialization(true)
+            .build();
+        let mut player = player.lock().unwrap();
+        player.mutate_with_update_context(|context| {
+            let root = context.stage.root_clip().unwrap();
+            let result = crate::external::Value::List(Vec::new()).into_avm2(context);
+            assert!(result.as_object().is_some());
+            assert!(context.avm2.is_initialized());
+            assert!(context.stage.object2().is_some());
+            assert!(context.stage.loader_info().is_some());
+            assert_eq!(context.stage.stage3ds().len(), 4);
+            let allocations = context.gc().metrics().total_gc_count();
+            context.ensure_avm2_initialized();
+            assert_eq!(context.gc().metrics().total_gc_count(), allocations);
+            assert!(DisplayObject::option_ptr_eq(
+                context.stage.root_clip(),
+                Some(root)
+            ));
+        });
+        // A root replacement back to AVM1 retains the initialized VM and stage.
+        player.mutate_with_update_context(|context| {
+            context.replace_root_movie(SwfMovie::empty(8, None));
+            assert!(context.avm2.is_initialized());
+            assert_eq!(context.stage.stage3ds().len(), 4);
+            assert!(context.stage.loader_info().is_some());
+        });
+        player.run_frame();
+    }
 }

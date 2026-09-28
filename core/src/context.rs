@@ -351,12 +351,46 @@ impl<'gc> UpdateContext<'gc> {
         self.audio_manager.set_sound_transforms_dirty()
     }
 
+    /// Finish AVM2 initialization before an AS3 movie or an image loader uses it.
+    /// The stage shell exists even for AVM1; its AVM2 objects are created only once.
+    pub fn ensure_avm2_initialized(&mut self) {
+        if self.avm2.is_initialized() {
+            return;
+        }
+        Avm2::load_player_globals(self);
+        self.stage
+            .post_instantiation(self, None, Instantiator::Movie, false);
+        // A deferred image load can be the first AVM2 user in an existing AVM1
+        // movie. Backfill the same stage LoaderInfo that eager startup created.
+        if let Some(root) = self.stage.root_clip() {
+            self.set_stage_loader_info(root);
+        }
+    }
+
+    fn set_stage_loader_info(&mut self, root: DisplayObject<'gc>) {
+        let swf = self.root_swf.clone();
+        let stage_domain = self.avm2.stage_domain();
+        let mut activation = Avm2Activation::from_domain(self, stage_domain);
+        let info = LoaderInfoObject::not_yet_loaded(&mut activation, swf, None, Some(root), true)
+            .expect("Failed to construct Stage LoaderInfo");
+        info.set_expose_content();
+        activation
+            .context
+            .stage
+            .set_loader_info(activation.gc(), info);
+    }
+
     /// Change the root movie.
     ///
     /// This should only be called once, as it makes no attempt at proper clean-up
     /// of previous stage contents. If you need to load a new root movie, you
     /// should use `replace_root_movie`.
     pub fn set_root_movie(&mut self, movie: SwfMovie) {
+        // Initialize with the original AllVersions API view, before selecting the
+        // incoming root's API version, exactly as eager PlayerBuilder does.
+        if movie.is_action_script_3() {
+            self.ensure_avm2_initialized();
+        }
         if !self.forced_frame_rate {
             *self.frame_rate = movie.frame_rate().into();
         }
@@ -400,17 +434,10 @@ impl<'gc> UpdateContext<'gc> {
         // and has no associated `Loader` instance.
         // However, some properties are always accessible, and take their values
         // from the root SWF.
-        let stage_loader_info =
-            LoaderInfoObject::not_yet_loaded(&mut activation, swf, None, Some(root), true)
-                .expect("Failed to construct Stage LoaderInfo");
-        stage_loader_info.set_expose_content();
-
-        activation
-            .context
-            .stage
-            .set_loader_info(activation.gc(), stage_loader_info);
-
         drop(activation);
+        if self.avm2.is_initialized() {
+            self.set_stage_loader_info(root);
+        }
 
         root.set_depth(0);
         root.set_perspective_projection(None); // Set default PerspectiveProjection

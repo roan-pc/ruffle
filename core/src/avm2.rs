@@ -138,6 +138,10 @@ pub struct Avm2<'gc> {
     /// (which can be observed from ActionScript)
     stage_domain: Domain<'gc>,
 
+    /// Set only after all builtins and both domain memories have been initialized.
+    playerglobals_initialized: bool,
+    playerglobals_initializing: bool,
+
     /// System classes.
     system_classes: Option<SystemClasses<'gc>>,
 
@@ -216,6 +220,8 @@ impl<'gc> Avm2<'gc> {
             call_stack: GcRefLock::new(mc, CallStack::new().into()),
             playerglobals_domain,
             stage_domain,
+            playerglobals_initialized: false,
+            playerglobals_initializing: false,
             system_classes: None,
             system_class_defs: None,
             toplevel_global_object: None,
@@ -246,8 +252,22 @@ impl<'gc> Avm2<'gc> {
     }
 
     pub fn load_player_globals(context: &mut UpdateContext<'gc>) {
+        if context.avm2.playerglobals_initialized {
+            return;
+        }
+        assert!(
+            !context.avm2.playerglobals_initializing,
+            "Reentrant AVM2 builtin initialization"
+        );
+        context.avm2.playerglobals_initializing = true;
         let globals = context.avm2.playerglobals_domain;
         globals::load_playerglobal(context, globals);
+        context.avm2.playerglobals_initializing = false;
+        context.avm2.playerglobals_initialized = true;
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.playerglobals_initialized
     }
 
     pub fn playerglobals_domain(&self) -> Domain<'gc> {
@@ -510,6 +530,7 @@ impl<'gc> Avm2<'gc> {
         domain: Domain<'gc>,
         movie: Arc<SwfMovie>,
     ) -> Result<Option<Script<'gc>>, Error<'gc>> {
+        context.ensure_avm2_initialized();
         let mut reader = Reader::new(data);
         let abc = match reader.read() {
             Ok(abc) => Arc::new(abc),
