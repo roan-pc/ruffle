@@ -54,6 +54,10 @@ impl ShapeTessellator {
         self.mesh = Vec::new();
         self.gradients = IndexSet::new();
         self.lyon_mesh = VertexBuffers::new();
+        // A previous shape must not decide whether this one's leading strokes
+        // contribute to masks. Every shape starts with an empty fill batch.
+        self.is_stroke = false;
+        self.mask_index_count = None;
 
         for path in shape.paths {
             let (fill_style, lyon_path, next_is_stroke) = match &path {
@@ -468,6 +472,43 @@ impl StrokeVertexConstructor<Vertex> for RuffleVertexCtor {
             x: vertex.position().x,
             y: vertex.position().y,
             color: self.color,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::null::NullBitmapSource;
+    use swf::{Color, LineStyle, Point, Twips};
+
+    #[test]
+    fn leading_strokes_never_contribute_to_a_mask() {
+        let style = LineStyle::new()
+            .with_color(Color::WHITE)
+            .with_width(Twips::new(20));
+        let mut tessellator = ShapeTessellator::new();
+        for _ in 0..2 {
+            let shape = DistilledShape {
+                paths: vec![DrawPath::Stroke {
+                    style: &style,
+                    commands: vec![
+                        DrawCommand::MoveTo(Point::new(Twips::ZERO, Twips::ZERO)),
+                        DrawCommand::LineTo(Point::new(Twips::new(200), Twips::ZERO)),
+                    ],
+                    is_closed: false,
+                }],
+                shape_bounds: Default::default(),
+                edge_bounds: Default::default(),
+                id: 1,
+            };
+            let mesh = tessellator.tessellate_shape(shape, &NullBitmapSource);
+            assert!(!mesh.draws.is_empty());
+            assert!(
+                mesh.draws
+                    .iter()
+                    .all(|draw| !draw.indices.is_empty() && draw.mask_index_count == 0)
+            );
         }
     }
 }
