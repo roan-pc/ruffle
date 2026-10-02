@@ -18,6 +18,7 @@ use crate::backend::{
     locale::LocaleBackend,
     log::LogBackend,
     navigator::{NavigatorBackend, Request},
+    random::Avm1RandomBackend,
     storage::StorageBackend,
     ui::{MouseCursor, UiBackend},
 };
@@ -2630,6 +2631,7 @@ pub struct PlayerBuilder {
     ui: Option<Box<dyn UiBackend>>,
     video: Option<Box<dyn VideoBackend>>,
     locale: Option<Box<dyn LocaleBackend>>,
+    avm1_random: Option<Box<dyn Avm1RandomBackend>>,
 
     // Notifications
     notification_sender: Option<Sender<PlayerNotification>>,
@@ -2685,6 +2687,7 @@ impl PlayerBuilder {
             ui: None,
             video: None,
             locale: None,
+            avm1_random: None,
 
             notification_sender: None,
 
@@ -2800,6 +2803,14 @@ impl PlayerBuilder {
     #[inline]
     pub fn with_locale(mut self, locale: impl 'static + LocaleBackend) -> Self {
         self.locale = Some(Box::new(locale));
+        self
+    }
+
+    /// Sets the source of AVM1's `random(n)` action and `Math.random()`, in place of the
+    /// player's own generator.
+    #[inline]
+    pub fn with_avm1_random(mut self, random: impl 'static + Avm1RandomBackend) -> Self {
+        self.avm1_random = Some(Box::new(random));
         self
     }
 
@@ -3108,7 +3119,7 @@ impl PlayerBuilder {
                 // Misc. state
                 // TODO: AVM1 and AVM2 use separate RNGs (though algorithm is same), so this is technically incorrect.
                 // See: https://github.com/ruffle-rs/ruffle/issues/20244
-                rng: AvmRng::default(),
+                rng: AvmRng::with_avm1_backend(self.avm1_random),
                 system: SystemProperties::new(language),
                 page_url: self.page_url.clone(),
                 transform_stack: TransformStack::new(),

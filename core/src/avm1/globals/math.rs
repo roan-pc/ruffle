@@ -110,16 +110,7 @@ pub fn method<'gc>(
         // Note that Flash Math.round always rounds toward infinity,
         // unlike Rust's f64::round which rounds away from zero.
         ROUND => (x + 0.5).floor(),
-        // See https://github.com/adobe/avmplus/blob/858d034a3bd3a54d9b70909386435cf4aec81d21/core/MathUtils.cpp#L1731C24-L1731C44
-        // This generated a restricted set of 'f64' values, which some SWFs implicitly rely on.
-        RANDOM => {
-            const MAX_VAL: u32 = 0x7FFFFFFF;
-            let rand = activation
-                .context
-                .rng
-                .generate_random_number(activation.context.locale);
-            (rand as f64) / (MAX_VAL as f64 + 1f64)
-        }
+        RANDOM => (activation.context.rng).avm1_math_random(activation.context.locale),
         FLOOR => x.floor(),
         CEIL => x.ceil(),
         ATAN => x.atan(),
