@@ -363,6 +363,9 @@ pub struct Player {
     /// This is how we support custom SWF framerates
     /// and compensate for small lags by "catching up" (up to MAX_FRAMES_PER_TICK).
     frame_accumulator: FloatDuration,
+
+    /// How many frames the last `tick` ran.
+    frames_last_tick: u32,
     recent_run_frame_timings: VecDeque<f64>,
 
     /// Faked time passage for fooling hand-written busy-loop FPS limiters.
@@ -547,6 +550,7 @@ impl Player {
     }
 
     pub fn tick(&mut self, dt: FloatDuration) {
+        self.frames_last_tick = 0;
         if !self.is_playing() {
             return;
         }
@@ -566,6 +570,7 @@ impl Player {
 
             self.frame_accumulator -= frame_duration;
             frame += 1;
+            self.frames_last_tick = frame;
             // The script probably tried implementing an FPS limiter with a busy loop.
             // We fooled the busy loop by pretending that more time has passed that actually did.
             // Then we need to actually pass this time, by decreasing frame_accumulator
@@ -612,6 +617,12 @@ impl Player {
             StreamManager::tick(context, dt);
         });
         self.audio.tick();
+    }
+
+    /// How many frames the last `tick` ran: 0 when its time did not reach the next frame (or
+    /// the player was not playing).
+    pub fn frames_last_tick(&self) -> u32 {
+        self.frames_last_tick
     }
 
     pub fn time_til_next_timer(&self) -> Option<f64> {
@@ -3102,6 +3113,7 @@ impl PlayerBuilder {
                 forced_frame_rate,
                 frame_phase: Default::default(),
                 frame_accumulator: FloatDuration::ZERO,
+                frames_last_tick: 0,
                 recent_run_frame_timings: VecDeque::with_capacity(10),
                 start_time: Instant::now(),
                 time_offset: 0,
