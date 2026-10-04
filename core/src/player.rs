@@ -625,6 +625,18 @@ impl Player {
         self.frames_last_tick
     }
 
+    /// Whether the root movie clip's timeline is playing: false once its own `stop()` (or an
+    /// embedder's) has stopped it, or with no root clip.
+    pub fn root_playing(&mut self) -> bool {
+        self.mutate_with_update_context(|context| {
+            context
+                .stage
+                .root_clip()
+                .and_then(|root| root.as_movie_clip())
+                .is_some_and(|mc| mc.playing())
+        })
+    }
+
     pub fn time_til_next_timer(&self) -> Option<f64> {
         self.time_til_next_timer
     }
